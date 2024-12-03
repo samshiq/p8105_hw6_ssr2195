@@ -1,0 +1,186 @@
+---
+title: "Homework 6"
+author: "Samina Rashiq"
+date: "`r Sys.Date()`"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(broom)
+library(dplyr)
+library(knitr)
+library(ggplot2)
+```
+
+### Problem 1
+
+```{r 1.import}
+
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+
+```
+
+### Problem 2
+
+```{r 2.1}
+
+# Import, clean, and filter data
+homicide_data <- 
+  read_csv("data/homicide-data.csv") %>%
+  mutate(
+    city_state = paste(city, state, sep = ", "),
+    solved = if_else(disposition == "Open/No arrest", 0, 1),
+    victim_age = na_if(victim_age, "Unknown"),
+    victim_age = as.numeric(victim_age)
+  ) %>%
+  filter(
+    !is.na(victim_age),
+    !(city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL")),
+    victim_race %in% c("White", "Black"),
+    victim_sex != "Unknown"
+  )
+
+```
+
+
+
+##### Logistic regression for Baltimore, MD
+```{r 2.2}
+
+# Filter dataset for Baltimore, MD
+baltimore_data <- 
+  homicide_data %>%
+  filter(city_state == "Baltimore, MD")
+
+# Fit logistic regression controlling for victim_age and victim_race
+baltimore_lm <- 
+  baltimore_data %>%
+  glm(solved ~ victim_sex + victim_age + victim_race, 
+      data = ., 
+      family = binomial())
+
+# Extract the OR and 95% CI for Males vs. Females (ref group)
+male_female_odds <- baltimore_lm %>%
+  broom::tidy(conf.int = TRUE) %>%
+  mutate(
+    OR = exp(estimate),
+    OR_low = exp(conf.low),
+    OR_high = exp(conf.high)
+  ) %>%
+  filter(term == "victim_sexMale")
+
+# Print the result
+male_female_odds %>%
+  select(
+    Term = term,             
+    Log_Odds = estimate,
+    Odds_Ratio = OR,
+    CI_Lower = OR_low,
+    CI_Upper = OR_high,
+    P_Value = p.value
+  ) %>%
+  knitr::kable(
+    digits = 3,              
+    format = "markdown"
+  )
+
+```
+
+The odds of homicide for males is 64.5% lower than the odds for females, holding age and race constant. 
+
+
+
+##### Linear model for all cities
+```{r}
+# Run logistic regression for each city and extract ORs and CIs
+cityresults_bysex <- homicide_data %>%
+  group_by(city_state) %>%
+  nest() %>% 
+  mutate(
+    city_sex_model = map(data, ~ glm(solved ~ victim_sex + victim_age + victim_race, 
+                            family = binomial, data = .x)),
+    tidy_city_sex_model = map(city_sex_model, ~ tidy(.x, conf.int = TRUE)),
+    odds_ratios = map(tidy_city_sex_model, ~ filter(.x, term == "victim_sexMale") %>%
+                        mutate(odds_ratio = exp(estimate),
+                               conf.low = exp(conf.low),
+                               conf.high = exp(conf.high)))
+  ) %>%
+  unnest(odds_ratios, keep_empty = TRUE) %>% 
+  select(city_state, odds_ratio, conf.low, conf.high, estimate, std.error, p.value)
+
+
+# Print the results
+cityresults_bysex %>%
+  ungroup() %>%                  
+  select(
+    City = city_state,
+    Odds_Ratio = odds_ratio,
+    CI_Lower = conf.low,
+    CI_Upper = conf.high,
+    Log_Odds = estimate,
+    Std_Error = std.error,
+    P_Value = p.value
+  ) %>%
+  slice(1:12) %>%
+  knitr::kable(
+    digits = 3,
+    format = "markdown",
+    caption = "Odds Ratios for Solving Homicides by Victim Sex (First 12 Obs)"
+  )
+
+```
+
+
+
+##### Homicide solved plot
+```{r}
+
+cityresults_bysex_ordered <- cityresults_bysex %>%
+  arrange(odds_ratio)  # Arrange data by odds_ratio in ascending order
+
+# Plot the data
+ggplot(cityresults_bysex_ordered, aes(x = reorder(city_state, odds_ratio), y = odds_ratio)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  coord_flip() +
+  labs(
+    title = "Estimated Odds Ratios for Solving Homicides by City",
+    x = "City",
+    y = "Odds Ratio (Male vs Female)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 8)
+  )
+
+```
+
+
+### Problem 3
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
