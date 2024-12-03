@@ -12,12 +12,15 @@ library(broom)
 library(dplyr)
 library(knitr)
 library(ggplot2)
+library(modelr)
+library(purrr)
 ```
 
 ### Problem 1
 
-```{r 1.import}
+```{r 1.1}
 
+# Import data
 weather_df = 
   rnoaa::meteo_pull_monitors(
     c("USW00094728"),
@@ -30,8 +33,56 @@ weather_df =
     tmax = tmax / 10) %>%
   select(name, id, everything())
 
+# Produce estimates from each boostrap sample
+set.seed(780)
+
+bootstrap_results = 
+  weather_df %>%
+  modelr::bootstrap(n = 5000) %>%
+  mutate(
+    models = map(strap, \(df) lm(tmax ~ tmin, data = df)),
+    r2 = map_dbl(models, \(model) glance(model)$r.squared),
+    results = map(models, broom::tidy)) %>%
+  unnest(results) %>%
+  select(.id, term, estimate, r2) %>%
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  ) %>%
+  mutate(
+    log_prod = log(`(Intercept)` * tmin)
+  ) %>%
+  select(r2, log_prod)
+
+# View estimates
+bootstrap_results %>%
+  pivot_longer(
+    everything(),
+    names_to = "statistic", 
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = value)) +
+  geom_density() +
+  facet_grid(~statistic, scales = "free")
+
 ```
 
+```{r}
+
+# Create 95% CIs 
+bootstrap_results %>%
+  summarise(
+    R2_lower = quantile(r2, 0.025),
+    R2_upper = quantile(r2, 0.975),
+    logprod_lower = quantile(log_prod, 0.025),
+    logprod_upper = quantile(log_prod, 0.975)
+  ) %>%
+  knitr::kable(
+    col.names = c("R² 2.5%", "R² 97.5%", "log(β₀*β₁) 2.5%", "log(β₀*β₁) 97.5%"),
+    digits = 3
+  )
+
+```
 ### Problem 2
 
 ```{r 2.1}
@@ -98,7 +149,7 @@ male_female_odds %>%
 
 ```
 
-The odds of homicide for males is 64.5% lower than the odds for females, holding age and race constant. 
+The odds having a homicide case solved for male victims is 64.5% lower than the odds for female victims, holding age and race constant. 
 
 
 
@@ -137,7 +188,7 @@ cityresults_bysex %>%
   knitr::kable(
     digits = 3,
     format = "markdown",
-    caption = "Odds Ratios for Solving Homicides by Victim Sex (First 12 Obs)"
+    caption = "ORs for Solving Homicides by Victim Sex (First 12 Obs)"
   )
 
 ```
@@ -148,9 +199,8 @@ cityresults_bysex %>%
 ```{r}
 
 cityresults_bysex_ordered <- cityresults_bysex %>%
-  arrange(odds_ratio)  # Arrange data by odds_ratio in ascending order
+  arrange(odds_ratio)  
 
-# Plot the data
 ggplot(cityresults_bysex_ordered, aes(x = reorder(city_state, odds_ratio), y = odds_ratio)) +
   geom_point() +
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
@@ -171,12 +221,163 @@ ggplot(cityresults_bysex_ordered, aes(x = reorder(city_state, odds_ratio), y = o
 ### Problem 3
 
 
+```{r}
+
+birthweight_data <- 
+  read_csv("data/birthweight.csv")
+
+# Convert categorical variables to factor type
+birthweight_data <- birthweight_data %>%
+  mutate(
+    babysex = factor(
+      babysex, 
+      levels = c(1, 2), 
+      labels = c("Male", "Female")
+    ),
+    malform = factor(
+      malform, 
+      levels = c(0, 1), 
+      labels = c("Absent", "Present")
+    ),
+    frace = factor(
+      frace, 
+      levels = c(1, 2, 3, 4, 8, 9), 
+      labels = c("White", "Black", "Asian", "Puerto Rican", "Other", "Unknown")
+    ),
+    mrace = factor(
+      mrace, 
+      levels = c(1, 2, 3, 4, 8), 
+      labels = c("White", "Black", "Asian", "Puerto Rican", "Other")
+    )
+  )
+
+# Identify columns with missing data
+colSums(is.na(birthweight_data))
+
+```
 
 
 
+[This study](https://www.sciencedirect.com/science/article/abs/pii/0002937865902486) found that the maternal weight, height, and weight gain during pregnancy, as well as gestational age, are all positively associated with infant birthweight. They also found that males are generally heavier than females. I also hypothesize that greater length and head circumference will be associated with heavier babies. 
+
+Using this theoretical approach, we will include the variables **`r paste(c("delwt (maternal weight)", "mheight (maternal height)", "wtgain (weight gain during pregnancy)", "gaweeks (gestational age)", "babysex (baby's sex)", "blength (baby's length)", "bhead (baby's head circumference)"), collapse = ", ")`** in our initial model.
+
+
+```{r}
+
+# Testing significance of each variable in the model
+birthweight_full <- lm(bwt ~ gaweeks + blength + bhead + delwt + mheight + wtgain + babysex, data = birthweight_data)
+
+# Extract and print results
+summary_table <- tidy(birthweight_full) %>%
+  select(
+    Term = term,
+    Estimate = estimate,
+    `Std. Error` = std.error,
+    `t value` = statistic,
+    `P Value` = p.value
+  ) %>%
+  mutate(
+    `Significance` = case_when(
+      `P Value` < 0.001 ~ "***",
+      `P Value` < 0.01 ~ "**",
+      `P Value` < 0.05 ~ "*",
+      TRUE ~ ""
+    )
+  )
+
+# Create a kable table
+summary_table %>%
+  knitr::kable(
+    digits = 3,                   
+    format = "markdown",           
+  )
+
+```
 
 
 
+Since each predictor in the model was highly significant, we can keep all of the initial variables. 
+
+```{r}
+# Check assumptions for MLR
+
+birthweight_data <- birthweight_data %>%
+  add_predictions(birthweight_full) %>%
+  add_residuals(birthweight_full)
+
+ggplot(birthweight_data, aes(x = pred, y = resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Residuals vs Fitted Values", x = "Fitted Values", y = "Residuals")
+
+```
+
+
+We expect a residuals versus fitted values plot to have residuals equally scattered across y = 0 in order to satisfy the homoscedasticity assumption. The large cluster of points suggests that this assumption may be violated. 
+
+```{r}
+
+# Define comparison models
+comparison_model_1 = bwt ~ gaweeks + blength
+comparison_model_2 = bwt ~ blength * bhead * babysex
+
+# Create cross-validation splits
+set.seed(3005)
+cv_splits = 
+  crossv_mc(birthweight_data, 100) %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+
+# Fit models on training data
+cv_res_df = 
+  cv_splits %>% 
+  mutate(
+    full_mod = map(train, ~lm(bwt ~ gaweeks + blength + bhead + delwt + mheight + wtgain + babysex, data = .x)),
+    comparison_mod_1 = map(train, ~lm(bwt ~ gaweeks + blength, data = .x)),
+    comparison_mod_2 = map(train, ~lm(bwt ~ blength * bhead * babysex, data = .x))
+  )
+
+# Define RMSE calculation
+rmse = function(model, test_data) {
+  predictions = predict(model, newdata = test_data)
+  truth = test_data$bwt
+  sqrt(mean((predictions - truth)^2))
+}
+
+# Add RMSE values for each model
+cv_res_df = cv_res_df %>% 
+  mutate(
+    rmse_full = map2_dbl(full_mod, test, rmse),
+    rmse_comparison_1 = map2_dbl(comparison_mod_1, test, rmse),
+    rmse_comparison_2 = map2_dbl(comparison_mod_2, test, rmse)
+  )
+
+# Create RMSE plot
+rmse_plot_data = 
+  cv_res_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  )
+
+ggplot(rmse_plot_data, aes(x = model, y = rmse)) + 
+  geom_violin() +
+  labs(
+    title = "RMSE Distribution Across Models",
+    x = "Model",
+    y = "RMSE"
+  )
+
+
+```
+
+When looking at root mean square error (RMSE), we see differences between each of the three models. The model with the worst performance is comparison model 1, as indiated by the higest RMSE overall. This makes sense because infant birthweight has been rigorously studied in the literature and many factors aside from gestational age and lenght at birth are relevant. The full theoretical model that was made has the best performance, but comparison model 2 with the interactions performs similarly. The full model also has a narrower distribution than the second comparison model, suggesting that its performance is more consistent. 
 
 
 
